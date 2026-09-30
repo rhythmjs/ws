@@ -1,10 +1,7 @@
-import { createServer } from "node:http";
-import { Rhythm } from "@rhythmjs/rhythm";
-import type { RhythmHttpContext } from "@rhythmjs/router/context";
-import { getRequestListener } from "@rhythmjs/router/adapters/node";
-import { RhythmRouter } from "@rhythmjs/router";
-import { RhythmWs, type WsMiddleware } from "../src/rhythm-ws.ts";
-import { attach, handle } from "../src/adapters/node.ts";
+// A chat server on Bun.serve: RhythmWs routes upgrades, every handler is a
+// plain Bun websocket handler, and Bun's native pub/sub fans messages out per
+// room. Run with: bun example/index.ts
+import { RhythmWs } from "../src/rhythm-ws.ts";
 
 const page = `<!doctype html>
 <meta charset="utf-8" />
@@ -25,73 +22,58 @@ const page = `<!doctype html>
   });
 </script>`;
 
-const requireToken: WsMiddleware = (request, next) => {
-  if (new URL(request.url).searchParams.get("token") !== "demo") {
-    return new Response("Unauthorized", { status: 401 });
-  }
-  return next();
-};
+interface Chat {
+  handle: string;
+  room: string;
+  topic: string;
+}
 
-const logMessages: WsMiddleware = async (request, next) => {
-  const hooks = await next();
-  const path = new URL(request.url).pathname;
-  return {
-    ...hooks,
-    message(peer, message) {
-      console.log(`[ws] ${path} <- ${message.text()}`);
-      return hooks.message?.(peer, message);
+const ws = new RhythmWs({ prefix: "/ws", idleTimeout: 120 })
+  .guard((request) =>
+    new URL(request.url).searchParams.get("token") === "demo"
+      ? undefined
+      : new Response("Unauthorized", { status: 401 }),
+  )
+  .route<Chat>("/rooms/:id", {
+    upgrade(_request, params) {
+      const room = params.id!;
+      return { handle: Math.random().toString(36).slice(2, 8), room, topic: `room:${room}` };
     },
-  };
-};
-
-const chat = new RhythmWs({ prefix: "/ws/rooms" }).ws("/:id", (params) => {
-  const topic = `room:${params.id}`;
-  return {
     open(peer) {
-      peer.subscribe(topic);
-      peer.send(`joined ${params.id}`);
-      peer.publish(topic, `${peer.id.slice(0, 8)} joined ${params.id}`);
+      peer.subscribe(peer.data.topic);
+      peer.send(`joined ${peer.data.room}`);
+      peer.publish(peer.data.topic, `${peer.data.handle} joined ${peer.data.room}`);
     },
     message(peer, message) {
-      const line = `${peer.id.slice(0, 8)}: ${message.text()}`;
+      const line = `${peer.data.handle}: ${String(message)}`;
       peer.send(line);
-      peer.publish(topic, line);
+      peer.publish(peer.data.topic, line);
     },
     close(peer) {
-      peer.publish(topic, `${peer.id.slice(0, 8)} left ${params.id}`);
+      peer.publish(peer.data.topic, `${peer.data.handle} left ${peer.data.room}`);
     },
-  };
+  });
+
+const server = Bun.serve({
+  port: 3000,
+  fetch(request, srv) {
+    const upgrade = ws.upgrade(request, srv);
+    if (upgrade !== null) return upgrade;
+
+    const { pathname } = new URL(request.url);
+    if (request.method === "POST" && pathname.startsWith("/api/rooms/") && pathname.endsWith("/announce")) {
+      const id = pathname.slice("/api/rooms/".length, -"/announce".length);
+      return request.text().then((text) => {
+        srv.publish(`room:${id}`, `announcement: ${text}`);
+        return Response.json({ ok: true }, { status: 201 });
+      });
+    }
+    if (pathname === "/") {
+      return new Response(page, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    return new Response("Not Found", { status: 404 });
+  },
+  websocket: ws.websocket,
 });
 
-const ws = new RhythmWs({ prefix: "/ws" })
-  .ws("/echo", {
-    message(peer, message) {
-      peer.send(`echo: ${message.text()}`);
-    },
-  })
-  .use(requireToken)
-  .use(logMessages)
-  .use(chat.middleware());
-
-const adapter = handle(ws);
-
-const apiRouter = new RhythmRouter({ prefix: "/api" }).post("/rooms/:id/announce", async (ctx) => {
-  const text = await ctx.request.text();
-  adapter.publish(`room:${ctx.params.id}`, `announcement: ${text}`);
-  ctx.json({ ok: true }, 201);
-});
-
-const app = new Rhythm<RhythmHttpContext>({ name: "ws-example" }).use(apiRouter.middleware()).use(async (ctx) => {
-  if (new URL(ctx.request.url).pathname === "/") {
-    ctx.html(page);
-    return;
-  }
-  ctx.error(404);
-});
-
-const port = 3000;
-const server = createServer(getRequestListener(app));
-attach(server, adapter);
-server.listen(port, () => {
-  console.log(`listening on http://localhost:${port} (open two tabs, or #room-name for other rooms)`);
-});
+console.log(`listening on ${server.url} (open two tabs, or #room-name for other rooms)`);

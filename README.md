@@ -1,133 +1,98 @@
 # @rhythmjs/ws
 
-Cross-runtime WebSocket routing for Rhythm, built on [crossws](https://crossws.h3.dev). `RhythmWs` routes _connections_ by path with [rou3](https://github.com/h3js/rou3), the same matcher as `@rhythmjs/router` (a static segment always wins over a `:param` segment, and rou3's pattern syntax — `:name`, `:name?`, `*`, `**`, `**:name` — applies), and crossws hooks define what each connection does — on Node, Bun, Deno, and Cloudflare with one definition.
-
-WebSocket upgrades never flow through the HTTP middleware chain: they divert _beside_ the app, per connection, and every ordinary request still belongs to your router.
+WebSocket routing built on [Bun's own model](https://bun.com/docs/runtime/http/websockets), and nothing else. `RhythmWs` adds exactly the two things `Bun.serve` leaves to you — matching upgrade requests to endpoints, and deciding what each connection's `ws.data` is — with [rou3](https://github.com/h3js/rou3) route patterns (`:param`, `:param?`, `*`, `**`; a static segment beats a param segment). Everything else **is** Bun: handlers are Bun `WebSocketHandler` members receiving Bun's `ServerWebSocket`, `ws.data` is the object your route attached (typed per route), fan-out is Bun's native pub/sub, and the handshake is `server.upgrade()`.
 
 ## Example
 
 ```ts
 import { RhythmWs } from "@rhythmjs/ws";
 
-const ws = new RhythmWs({ prefix: "/ws" })
-  .ws("/chat", {
-    open(peer) {
-      peer.subscribe("chat");
+interface Chat {
+  user: string;
+  room: string;
+}
+
+const ws = new RhythmWs({ prefix: "/ws", idleTimeout: 120 })
+  .guard((request) => (authorized(request) ? undefined : new Response("Unauthorized", { status: 401 })))
+  .route<Chat>("/rooms/:id", {
+    upgrade(request, params) {
+      const user = userFrom(request);
+      if (!user) return new Response("Forbidden", { status: 403 });
+      return { user, room: params.id! }; // becomes ws.data
     },
-    message(peer, message) {
-      peer.publish("chat", message.text());
+    open(ws) {
+      ws.subscribe(`room:${ws.data.room}`);
     },
-  })
-  .ws("/rooms/:id", (params) => ({
-    open(peer) {
-      peer.subscribe(`room:${params.id}`);
+    message(ws, message) {
+      ws.publish(`room:${ws.data.room}`, `${ws.data.user}: ${message}`);
     },
-  }));
-```
+    close(ws) {
+      ws.publish(`room:${ws.data.room}`, `${ws.data.user} left`);
+    },
+  });
 
-- **`.ws(path, hooks)`** — register [crossws hooks](https://crossws.h3.dev/guide/hooks) (`open`, `message`, `close`, `error`, `upgrade`) for a path; patterns follow [rou3](https://github.com/h3js/rou3) conventions (`:param`, `:param?`, `*`, `**`, `**:name`).
-- **`.ws(path, (params) => hooks)`** — a function handler receives the captured params. It runs **once per connection** (crossws caches the resolved hooks for the peer's lifetime), so an auth or database lookup here is one call, not one per message.
-- **`.use(fn)`** — connection middleware `(request, next) => hooks | Response`, koa-shaped like the router's, but per **connection**, not per message: it runs once at upgrade time, around the endpoints registered **after** it (registration order matters). `return next()` continues resolution; returning or throwing a `Response` rejects the handshake; decorating the result of `await next()` wraps the connection's behavior:
-
-  ```ts
-  const ws = new RhythmWs({ prefix: "/ws" })
-    .ws("/public", publicHooks) // before the middleware — unguarded
-    .use(async (request, next) => {
-      if (!(await isAuthorized(request.headers.get("cookie")))) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-      return next();
-    })
-    .use(async (request, next) => {
-      const hooks = await next(); // decorate downstream hooks: per-message logging
-      return { ...hooks, message: (peer, msg) => (log(msg), hooks.message?.(peer, msg)) };
-    })
-    .ws("/chat", chatHooks); // guarded and logged
-  ```
-
-- **`.middleware()`** — this `RhythmWs` compiled to a single connection middleware, following the router's convention: a nested `RhythmWs` mounts via `.use(child.middleware())`. On a miss the compiled child falls through to `next()`, so the parent's later middleware and endpoints still run. The mount is opaque, so the mounting instance's prefix is not applied — give the child its full prefix (`new RhythmWs({ prefix: "/ws/rooms" })`). Middleware registered before the mount wraps the child; the child's own middleware is kept inside it.
-- **`.resolve`** — the terminal form the adapters consume, `(request) => Promise<hooks>`; crossws knows it as [`resolve`](https://crossws.h3.dev/guide). An unmatched path resolves to hooks whose `upgrade` throws a `404 Response`, which aborts the handshake. Adapters accept the instance or this function.
-
-## Multiple apps on one server
-
-Each server has exactly one upgrade entry point, so several WebSocket apps (chatbots, live dashboards) compose by mounting into one root — the same shape as multiple `RhythmRouter`s in one `Rhythm` app:
-
-```ts
-const root = new RhythmWs()
-  .use(supportBot.middleware()) // RhythmWs with prefix "/ws/support"
-  .use(salesBot.middleware()); // RhythmWs with prefix "/ws/sales"
-```
-
-Topics share one namespace per adapter instance — prefix them per app (`support:room:${id}`).
-
-## Scaling to multiple instances
-
-`peer.publish` only reaches peers on the same instance. For multiple replicas, pass a crossws [sync backplane](https://crossws.h3.dev) to the adapter and publishes relay cluster-wide:
-
-```ts
-import { redis } from "crossws/sync";
-
-const adapter = handle(ws, { sync: redis(redisClient) });
-```
-
-## Serving per runtime
-
-Each runtime has an adapter under `@rhythmjs/ws/adapters/*` whose `handle(ws, options?)` returns the crossws instance for that platform (`options` accepts everything crossws does except `resolve` — e.g. `idleTimeout`, shared `hooks`).
-
-**Node** — upgrades arrive on the server's `upgrade` event, not the request listener; `attach` wires it:
-
-```ts
-import { createServer } from "node:http";
-import { getRequestListener } from "@rhythmjs/router/adapters/node";
-import { attach, handle } from "@rhythmjs/ws/adapters/node";
-
-const server = createServer(getRequestListener(app));
-attach(server, handle(ws));
-server.listen(3000);
-```
-
-With `serve()` from `@rhythmjs/router/serve`, use the plugin seam: `serve(app, { plugins: [(s) => s.node?.server && attach(s.node.server, handle(ws))] })`.
-
-**Bun** — pass the adapter's `websocket` to `Bun.serve`, and the instance itself to the router adapter's `websocket` option, which diverts upgrade requests before the app:
-
-```ts
-import { handle as handleApp } from "@rhythmjs/router/adapters/bun";
-import { handle as handleWs } from "@rhythmjs/ws/adapters/bun";
-
-const adapter = handleWs(ws);
 Bun.serve({
   port: 3000,
-  websocket: adapter.websocket,
-  fetch: handleApp(app, { websocket: adapter }),
+  fetch: (request, server) => ws.upgrade(request, server) ?? app(request),
+  websocket: ws.websocket,
 });
 ```
 
-**Deno**
+## The surface
+
+- **`new RhythmWs(options?)`** — `prefix` plus Bun's websocket tuning, carried onto `.websocket`: `idleTimeout`, `maxPayloadLength`, `backpressureLimit`, `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`, `perMessageDeflate`.
+- **`.route<Data>(path, handlers)`** — an endpoint. `handlers` is Bun's `WebSocketHandler` shape (`open`, `message`, `drain`, `close`, `ping`, `pong` — same signatures, same `ServerWebSocket`) plus two upgrade-time members:
+  - `upgrade(request, params, server)` — computes this connection's `ws.data` (any object), or returns a `Response` to reject the handshake. Without it, `ws.data` is the route params, so `ws.data.id` on `/rooms/:id` just works.
+  - `headers` — extra headers for the `101` response (subprotocol negotiation, cookies), a `HeadersInit` or `(request, params) =>` one.
+- **`.guard(fn)`** — `(request, server) => Response | undefined`, runs in order before every matched route of the instance; a `Response` rejects the handshake. Guards never run for unmatched paths.
+- **`.merge(child)`** — mounts another instance's routes under this prefix (`/ws` + `/rooms/:id` → `/ws/rooms/:id`), keeping the child's guards nested inside this instance's own. Snapshot semantics: later changes to the child stay out.
+- **`.upgrade(request, server)`** — the fetch-side half, bound so you can pass it around. Returns **`null` synchronously** when the request is not a matching websocket upgrade — that's what makes `?? app(request)` work — otherwise a promise of `undefined` (upgraded) or the rejecting `Response` (a refused `server.upgrade()` answers `500 Upgrade failed`, Bun's own convention).
+- **`.websocket`** — the one `websocket` behavior for `Bun.serve`. Dispatch is keyed on the `ws.data` object identity, so one behavior serves connections upgraded by *any* `RhythmWs` instance:
+
+  ```ts
+  Bun.serve({
+    fetch: (req, server) => support.upgrade(req, server) ?? sales.upgrade(req, server) ?? app(req),
+    websocket: support.websocket, // dispatches for sales too
+  });
+  ```
+
+Because `data` keys the dispatch, `upgrade` must return an object (the default params already are one), fresh per connection.
+
+## With `@rhythmjs/router`
 
 ```ts
-import { handle as handleApp } from "@rhythmjs/router/adapters/deno";
-import { handle as handleWs } from "@rhythmjs/ws/adapters/deno";
+import { serve } from "@rhythmjs/router/serve";
 
-Deno.serve({ port: 3000 }, handleApp(app, { websocket: handleWs(ws) }));
+serve(app, { port: 3000, upgrade: ws.upgrade, websocket: ws.websocket });
 ```
 
-**Cloudflare Workers** — requires a [Durable Object binding](https://crossws.h3.dev/adapters/cloudflare) for the socket to live in:
-
-```ts
-import { handle as handleApp } from "@rhythmjs/router/adapters/cloudflare";
-import { handle as handleWs } from "@rhythmjs/ws/adapters/cloudflare";
-
-const adapter = handleWs(ws);
-export default { fetch: handleApp(app, { websocket: adapter }) };
-```
+`serve()` understands the same three-way result: `Response` rejects, `undefined` means upgraded, `null` falls through to the HTTP app.
 
 ## Pushing from HTTP handlers
 
-The adapter instance is a plain object — import it anywhere and publish to a topic from an ordinary route:
+Bun's server publishes to any topic — no socket in hand required:
 
 ```ts
 router.post("/api/rooms/:id/messages", async (ctx) => {
-  adapter.publish(`room:${ctx.params.id}`, await ctx.request.text());
+  server.publish(`room:${ctx.params.id}`, await ctx.request.text());
   ctx.json({ ok: true }, 201);
 });
+```
+
+## Scaling to multiple instances
+
+Bun's pub/sub is in-process. For replicas, relay through a backplane you own (Redis pub/sub via `Bun.redis`, NATS) by calling `server.publish` in the subscriber.
+
+## Testing
+
+`@rhythmjs/testing/ws` drives upgrades without sockets: `upgradeWs(ws, "/rooms/7")` runs guards, `upgrade`, and `headers` for real and hands back the attached `data`; `mockWs(data)` is a recording `ServerWebSocket`; `fireOpen`/`fireMessage`/`fireClose`/`fireDrain` dispatch through `.websocket` exactly like Bun would.
+
+## Development
+
+```sh
+bun install
+bun test
+bun run check      # prettier + oxlint + tsc
+bun run build      # bun build + tsc declarations
+bun example/index.ts
 ```

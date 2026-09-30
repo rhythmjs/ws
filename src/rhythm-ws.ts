@@ -1,24 +1,59 @@
-import type { Hooks } from "crossws";
-import { addRoute, createRouter, findRoute } from "rou3";
+import { addRoute, createRouter, findRoute, type RouterContext } from "rou3";
 
 export type WsParams = Readonly<Record<string, string>>;
-export type WsHooks = Partial<Hooks>;
-export type WsHandler = WsHooks | ((params: WsParams) => WsHooks | Promise<WsHooks>);
+export type Server = Bun.Server<unknown>;
 
-export type WsNextFn = () => Promise<WsHooks>;
-export type WsMiddleware = (request: Request, next: WsNextFn) => WsHooks | Response | Promise<WsHooks | Response>;
+/**
+ * A routed websocket endpoint. Every lifecycle member is exactly Bun's
+ * `WebSocketHandler` member — `ws` is Bun's `ServerWebSocket`, and `ws.data`
+ * is whatever `upgrade` returned for this connection (the route params when
+ * there is no `upgrade`).
+ */
+export interface WsRoute<Data extends object = WsParams> {
+  /**
+   * Runs before `server.upgrade()`. Return this connection's `ws.data`, or a
+   * Response to reject the handshake.
+   */
+  upgrade?(request: Request, params: WsParams, server: Server): Data | Response | Promise<Data | Response>;
+  /** Extra headers for the 101 response (subprotocol, cookies). */
+  headers?: Bun.HeadersInit | ((request: Request, params: WsParams) => Bun.HeadersInit | Promise<Bun.HeadersInit>);
+  open?(ws: Bun.ServerWebSocket<Data>): void | Promise<void>;
+  message?(ws: Bun.ServerWebSocket<Data>, message: string | Buffer): void | Promise<void>;
+  drain?(ws: Bun.ServerWebSocket<Data>): void | Promise<void>;
+  close?(ws: Bun.ServerWebSocket<Data>, code: number, reason: string): void | Promise<void>;
+  ping?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
+  pong?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
+}
 
-export type WsResolve = (request: Request) => Promise<WsHooks>;
+/** Runs before a matched route's upgrade; return a Response to reject the handshake. */
+export type WsGuard = (
+  request: Request,
+  server: Server,
+) => Response | undefined | void | Promise<Response | undefined | void>;
 
-export interface RhythmWsOptions {
+/** Bun's websocket behavior tuning, passed through to `Bun.serve` verbatim. */
+export interface WsBehavior {
+  maxPayloadLength?: number;
+  idleTimeout?: number;
+  backpressureLimit?: number;
+  closeOnBackpressureLimit?: boolean;
+  sendPings?: boolean;
+  publishToSelf?: boolean;
+  perMessageDeflate?: Bun.WebSocketHandler<never>["perMessageDeflate"];
+}
+
+export interface RhythmWsOptions extends WsBehavior {
   prefix?: string;
 }
 
-export type WsEntry =
-  | { readonly kind: "middleware"; readonly fn: WsMiddleware }
-  | { readonly kind: "endpoint"; readonly path: string; readonly handler: WsHandler };
+type AnyRoute = WsRoute<object>;
+type AnyWs = Bun.ServerWebSocket<object>;
 
-type Entry = { kind: "middleware"; fn: WsMiddleware } | { kind: "endpoint"; path: string; handler: WsHandler };
+interface Entry {
+  path: string;
+  route: AnyRoute;
+  extraGuards: readonly WsGuard[];
+}
 
 function joinPath(prefix: string, path: string): string {
   if (!prefix) return path;
@@ -27,20 +62,15 @@ function joinPath(prefix: string, path: string): string {
   return `${trimmedPrefix}${normalizedPath}`;
 }
 
-function rejectWith(response: Response): WsHooks {
-  return {
-    upgrade() {
-      throw response;
-    },
-  };
-}
-
-const notFound = rejectWith(new Response("Not Found", { status: 404 }));
+// data -> route, shared across instances so one `websocket` behavior on a
+// server dispatches for every RhythmWs upgrading on it.
+const connections = new WeakMap<object, AnyRoute>();
 
 export class RhythmWs {
   #options: RhythmWsOptions;
   #entries: Entry[] = [];
-  #compiled: WsMiddleware | null = null;
+  #guards: WsGuard[] = [];
+  #tree: RouterContext<Entry> | null = null;
 
   constructor(options: RhythmWsOptions = {}) {
     this.#options = options;
@@ -50,79 +80,110 @@ export class RhythmWs {
     return this.#options.prefix ?? "";
   }
 
-  get entries(): readonly WsEntry[] {
-    return [...this.#entries];
-  }
-
-  ws(path: string, handler: WsHandler): this {
-    if (typeof handler !== "function" && typeof handler !== "object") {
-      throw new TypeError("handler must be hooks or a function returning hooks!");
+  /** Register an endpoint. `Data` is this route's `ws.data` type; without `upgrade` it is the route params. */
+  route<Data extends object = WsParams>(path: string, route: WsRoute<Data>): this {
+    if (typeof route !== "object" || route === null) {
+      throw new TypeError("route must be a handlers object!");
     }
-    this.#entries.push({ kind: "endpoint", path: joinPath(this.#prefix, path), handler });
-    this.#compiled = null;
+    this.#entries.push({ path: joinPath(this.#prefix, path), route: route as AnyRoute, extraGuards: [] });
+    this.#tree = null;
     return this;
   }
 
-  use(fn: WsMiddleware): this {
-    if (typeof fn !== "function") throw new TypeError("middleware must be a function!");
-    this.#entries.push({ kind: "middleware", fn });
-    this.#compiled = null;
+  /** Add a guard that runs, in registration order, before every route of this instance. */
+  guard(fn: WsGuard): this {
+    if (typeof fn !== "function") throw new TypeError("guard must be a function!");
+    this.#guards.push(fn);
     return this;
   }
 
-  middleware(): WsMiddleware {
-    return this.#compile();
-  }
-
-  resolve: WsResolve = async (request) => {
-    const compiled = (this.#compiled ??= this.#compile());
-    return compiled(request, () => Promise.resolve(notFound)) as Promise<WsHooks>;
-  };
-
-  #compile(): WsMiddleware {
-    const steps: WsMiddleware[] = [];
-    let i = 0;
-    while (i < this.#entries.length) {
-      const entry = this.#entries[i]!;
-      if (entry.kind === "middleware") {
-        steps.push(entry.fn);
-        i++;
-        continue;
-      }
-      const tree = createRouter<WsHandler>();
-      while (i < this.#entries.length) {
-        const endpoint = this.#entries[i]!;
-        if (endpoint.kind !== "endpoint") break;
-        addRoute(tree, "", endpoint.path, endpoint.handler);
-        i++;
-      }
-      steps.push(async (request, next) => {
-        const match = findRoute(tree, "", new URL(request.url).pathname);
-        if (!match) return next();
-        const { data: handler, params } = match;
-        return typeof handler === "function" ? await handler(params ?? {}) : handler;
+  /**
+   * Copy another instance's routes under this instance's prefix, keeping the
+   * child's guards (snapshotted now) inside this instance's own.
+   */
+  merge(child: RhythmWs): this {
+    for (const entry of child.#entries) {
+      this.#entries.push({
+        path: joinPath(this.#prefix, entry.path),
+        route: entry.route,
+        extraGuards: [...child.#guards, ...entry.extraGuards],
       });
     }
+    this.#tree = null;
+    return this;
+  }
 
-    return async (request, next) => {
-      let index = -1;
-      const dispatch = async (step: number): Promise<WsHooks> => {
-        if (step <= index) throw new Error("next() called multiple times");
-        index = step;
-        if (step === steps.length) return next();
-        const out = await steps[step]!(request, () => dispatch(step + 1));
-        if (out instanceof Response) return rejectWith(out);
-        if (typeof out !== "object" || out === null) {
-          throw new TypeError("ws middleware must return next(), hooks, or a Response!");
-        }
-        return out;
-      };
-      try {
-        return await dispatch(0);
-      } catch (error) {
-        if (error instanceof Response) return rejectWith(error);
-        throw error;
-      }
-    };
+  get routes(): readonly string[] {
+    return this.#entries.map((entry) => entry.path);
+  }
+
+  /**
+   * The fetch-side half. Returns null synchronously when the request is not a
+   * matching websocket upgrade — hand it to your HTTP app:
+   *
+   *     fetch: (request, server) => chat.upgrade(request, server) ?? app(request)
+   *
+   * Otherwise resolves to undefined once the socket is upgraded, or to the
+   * Response that rejects the handshake.
+   */
+  upgrade = (request: Request, server: Server): Promise<Response | undefined> | null => {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return null;
+    const tree = (this.#tree ??= this.#compile());
+    const match = findRoute(tree, "", new URL(request.url).pathname);
+    if (!match) return null;
+    return this.#accept(request, server, match.data, match.params ?? {});
+  };
+
+  /** The one `websocket` behavior for `Bun.serve`, carrying this instance's tuning options. */
+  get websocket(): Bun.WebSocketHandler<never> {
+    const { prefix: _prefix, ...behavior } = this.#options;
+    const routeOf = (ws: AnyWs): AnyRoute | undefined => connections.get(ws.data);
+    return {
+      ...behavior,
+      open(ws: AnyWs) {
+        return routeOf(ws)?.open?.(ws);
+      },
+      message(ws: AnyWs, message: string | Buffer) {
+        return routeOf(ws)?.message?.(ws, message);
+      },
+      drain(ws: AnyWs) {
+        return routeOf(ws)?.drain?.(ws);
+      },
+      close(ws: AnyWs, code: number, reason: string) {
+        return routeOf(ws)?.close?.(ws, code, reason);
+      },
+      ping(ws: AnyWs, data: Buffer) {
+        return routeOf(ws)?.ping?.(ws, data);
+      },
+      pong(ws: AnyWs, data: Buffer) {
+        return routeOf(ws)?.pong?.(ws, data);
+      },
+    } as unknown as Bun.WebSocketHandler<never>;
+  }
+
+  async #accept(request: Request, server: Server, entry: Entry, params: WsParams): Promise<Response | undefined> {
+    for (const guard of [...this.#guards, ...entry.extraGuards]) {
+      const verdict = await guard(request, server);
+      if (verdict instanceof Response) return verdict;
+    }
+
+    const route = entry.route;
+    let data: object = params;
+    if (route.upgrade) {
+      const out = await route.upgrade(request, params, server);
+      if (out instanceof Response) return out;
+      if (out !== undefined) data = out;
+    }
+    const headers = typeof route.headers === "function" ? await route.headers(request, params) : route.headers;
+
+    connections.set(data, route);
+    if (server.upgrade(request, { data, ...(headers === undefined ? {} : { headers }) })) return undefined;
+    return new Response("Upgrade failed", { status: 500 });
+  }
+
+  #compile(): RouterContext<Entry> {
+    const tree = createRouter<Entry>();
+    for (const entry of this.#entries) addRoute(tree, "", entry.path, entry);
+    return tree;
   }
 }
