@@ -49,7 +49,6 @@ describe("Bun.serve integration", () => {
       expect((await once<MessageEvent>(room, "message")).data).toBe("room:42");
       room.close();
 
-      // Unmatched upgrade and plain HTTP both fall through to the app.
       const res = await fetch(`${base.replace("ws", "http")}/anything`);
       expect(await res.text()).toBe("http ok");
       const missed = await fetch(`${base.replace("ws", "http")}/ws/nope`, { headers: { upgrade: "websocket" } });

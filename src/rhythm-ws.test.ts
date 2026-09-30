@@ -9,7 +9,6 @@ interface Upgraded {
   headers: Bun.HeadersInit | undefined;
 }
 
-/** A Server stub that records what reaches server.upgrade(). */
 function mockServer(accept = true): { server: Server; upgrades: Upgraded[] } {
   const upgrades: Upgraded[] = [];
   const server = {
@@ -161,7 +160,6 @@ describe("guards and merge", () => {
     ).toBeUndefined();
     expect(upgrades[0]!.data).toEqual({ id: "7" });
 
-    // The parent's own routes are not behind the child's guards.
     expect(await parent.upgrade(req("/ws/live", { "x-tenant": "a" }), server)).toBeUndefined();
   });
 

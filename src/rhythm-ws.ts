@@ -3,19 +3,8 @@ import { addRoute, createRouter, findRoute, type RouterContext } from "rou3";
 export type WsParams = Readonly<Record<string, string>>;
 export type Server = Bun.Server<unknown>;
 
-/**
- * A routed websocket endpoint. Every lifecycle member is exactly Bun's
- * `WebSocketHandler` member — `ws` is Bun's `ServerWebSocket`, and `ws.data`
- * is whatever `upgrade` returned for this connection (the route params when
- * there is no `upgrade`).
- */
 export interface WsRoute<Data extends object = WsParams> {
-  /**
-   * Runs before `server.upgrade()`. Return this connection's `ws.data`, or a
-   * Response to reject the handshake.
-   */
   upgrade?(request: Request, params: WsParams, server: Server): Data | Response | Promise<Data | Response>;
-  /** Extra headers for the 101 response (subprotocol, cookies). */
   headers?: Bun.HeadersInit | ((request: Request, params: WsParams) => Bun.HeadersInit | Promise<Bun.HeadersInit>);
   open?(ws: Bun.ServerWebSocket<Data>): void | Promise<void>;
   message?(ws: Bun.ServerWebSocket<Data>, message: string | Buffer): void | Promise<void>;
@@ -25,13 +14,11 @@ export interface WsRoute<Data extends object = WsParams> {
   pong?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
 }
 
-/** Runs before a matched route's upgrade; return a Response to reject the handshake. */
 export type WsGuard = (
   request: Request,
   server: Server,
 ) => Response | undefined | void | Promise<Response | undefined | void>;
 
-/** Bun's websocket behavior tuning, passed through to `Bun.serve` verbatim. */
 export interface WsBehavior {
   maxPayloadLength?: number;
   idleTimeout?: number;
@@ -62,8 +49,6 @@ function joinPath(prefix: string, path: string): string {
   return `${trimmedPrefix}${normalizedPath}`;
 }
 
-// data -> route, shared across instances so one `websocket` behavior on a
-// server dispatches for every RhythmWs upgrading on it.
 const connections = new WeakMap<object, AnyRoute>();
 
 export class RhythmWs {
@@ -80,7 +65,6 @@ export class RhythmWs {
     return this.#options.prefix ?? "";
   }
 
-  /** Register an endpoint. `Data` is this route's `ws.data` type; without `upgrade` it is the route params. */
   route<Data extends object = WsParams>(path: string, route: WsRoute<Data>): this {
     if (typeof route !== "object" || route === null) {
       throw new TypeError("route must be a handlers object!");
@@ -90,17 +74,12 @@ export class RhythmWs {
     return this;
   }
 
-  /** Add a guard that runs, in registration order, before every route of this instance. */
   guard(fn: WsGuard): this {
     if (typeof fn !== "function") throw new TypeError("guard must be a function!");
     this.#guards.push(fn);
     return this;
   }
 
-  /**
-   * Copy another instance's routes under this instance's prefix, keeping the
-   * child's guards (snapshotted now) inside this instance's own.
-   */
   merge(child: RhythmWs): this {
     for (const entry of child.#entries) {
       this.#entries.push({
@@ -117,15 +96,6 @@ export class RhythmWs {
     return this.#entries.map((entry) => entry.path);
   }
 
-  /**
-   * The fetch-side half. Returns null synchronously when the request is not a
-   * matching websocket upgrade — hand it to your HTTP app:
-   *
-   *     fetch: (request, server) => chat.upgrade(request, server) ?? app(request)
-   *
-   * Otherwise resolves to undefined once the socket is upgraded, or to the
-   * Response that rejects the handshake.
-   */
   upgrade = (request: Request, server: Server): Promise<Response | undefined> | null => {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return null;
     const tree = (this.#tree ??= this.#compile());
@@ -134,7 +104,6 @@ export class RhythmWs {
     return this.#accept(request, server, match.data, match.params ?? {});
   };
 
-  /** The one `websocket` behavior for `Bun.serve`, carrying this instance's tuning options. */
   get websocket(): Bun.WebSocketHandler<never> {
     const { prefix: _prefix, ...behavior } = this.#options;
     const routeOf = (ws: AnyWs): AnyRoute | undefined => connections.get(ws.data);

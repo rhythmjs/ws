@@ -1,6 +1,3 @@
-// A chat server on Bun.serve: RhythmWs routes upgrades, every handler is a
-// plain Bun websocket handler, and Bun's native pub/sub fans messages out per
-// room. Run with: bun example/index.ts
 import { RhythmWs } from "../src/rhythm-ws.ts";
 
 const page = `<!doctype html>
@@ -13,7 +10,7 @@ const page = `<!doctype html>
   const socket = new WebSocket(\`ws://\${location.host}/ws/rooms/\${room}?token=demo\`);
   const log = (line) => (document.getElementById("log").textContent += line + "\\n");
   socket.addEventListener("message", (e) => log(e.data));
-  socket.addEventListener("close", () => log("(disconnected — bad token?)"));
+  socket.addEventListener("close", () => log("(disconnected, bad token?)"));
   document.getElementById("msg").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.value) {
       socket.send(e.target.value);
