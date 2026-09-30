@@ -26,11 +26,10 @@ interface Chat {
 }
 
 const ws = new RhythmWs({ prefix: "/ws", idleTimeout: 120 })
-  .guard((request) =>
-    new URL(request.url).searchParams.get("token") === "demo"
-      ? undefined
-      : new Response("Unauthorized", { status: 401 }),
-  )
+  .use(async (ctx, next) => {
+    if (new URL(ctx.request.url).searchParams.get("token") === "demo") await next();
+    else ctx.response = new Response("Unauthorized", { status: 401 });
+  })
   .route<Chat>("/rooms/:id", {
     upgrade(_request, params) {
       const room = params.id!;

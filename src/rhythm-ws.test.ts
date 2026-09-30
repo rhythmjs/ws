@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { RhythmWs, type Server, type WsParams } from "./rhythm-ws";
+import { RhythmWs, type Server, type WsMiddleware, type WsParams } from "./rhythm-ws";
 
 const req = (path: string, headers: Record<string, string> = {}) =>
   new Request(`http://localhost${path}`, { headers: { upgrade: "websocket", ...headers } });
@@ -112,44 +112,80 @@ describe("route upgrade and headers", () => {
   });
 });
 
-describe("guards and merge", () => {
-  const requireAuth = (request: Request) =>
-    request.headers.get("authorization") === "secret" ? undefined : new Response("Unauthorized", { status: 401 });
+describe("middleware and mounting", () => {
+  const requireAuth: WsMiddleware = async (ctx, next) => {
+    if (ctx.request.headers.get("authorization") === "secret") await next();
+    else ctx.response = new Response("Unauthorized", { status: 401 });
+  };
 
-  test("guards run in order for matched routes and short-circuit on a Response", async () => {
+  test("middleware runs in order and a set response short-circuits the upgrade", async () => {
     const order: string[] = [];
     const ws = new RhythmWs()
-      .guard(() => {
+      .use((ctx) => {
         order.push("first");
-        return new Response(null, { status: 401 });
+        ctx.response = new Response(null, { status: 401 });
       })
-      .guard(() => {
+      .use(async (_ctx, next) => {
         order.push("second");
-        return undefined;
+        await next();
+      })
+      .route("/chat", {});
+    const { server, upgrades } = mockServer();
+
+    expect((await ws.upgrade(req("/chat"), server))?.status).toBe(401);
+    expect(order).toEqual(["first"]);
+    expect(upgrades).toHaveLength(0);
+  });
+
+  test("middleware that returns without next() fails closed", async () => {
+    const ws = new RhythmWs()
+      .use(() => {
+        // a forgotten next(): the handshake must not proceed
+      })
+      .route("/chat", {});
+    const { server, upgrades } = mockServer();
+
+    expect((await ws.upgrade(req("/chat"), server))?.status).toBe(403);
+    expect(upgrades).toHaveLength(0);
+  });
+
+  test("middleware setting a response and still calling next() cannot upgrade", async () => {
+    const ws = new RhythmWs()
+      .use(async (ctx, next) => {
+        ctx.response = new Response(null, { status: 401 });
+        await next();
+      })
+      .route("/chat", {});
+    const { server, upgrades } = mockServer();
+
+    expect((await ws.upgrade(req("/chat"), server))?.status).toBe(401);
+    expect(upgrades).toHaveLength(0);
+  });
+
+  test("middleware does not run for unmatched paths", async () => {
+    let ran = 0;
+    const ws = new RhythmWs()
+      .use(async (_ctx, next) => {
+        ran++;
+        await next();
       })
       .route("/chat", {});
     const { server } = mockServer();
 
-    expect((await ws.upgrade(req("/chat"), server))?.status).toBe(401);
-    expect(order).toEqual(["first"]);
-  });
-
-  test("guards do not run for unmatched paths", async () => {
-    let ran = 0;
-    const ws = new RhythmWs().guard(() => void ran++).route("/chat", {});
-    const { server } = mockServer();
-
-    ws.upgrade(req("/nope"), server);
+    expect(ws.upgrade(req("/nope"), server)).toBeNull();
     expect(ran).toBe(0);
     await ws.upgrade(req("/chat"), server);
     expect(ran).toBe(1);
   });
 
-  test("merge mounts a child under the parent prefix, keeping the child's guards inside the parent's", async () => {
-    const child = new RhythmWs({ prefix: "/rooms" }).guard(requireAuth).route("/:id", {});
+  test("use(child.middleware()) mounts the child's routes and scopes its own middleware around them", async () => {
+    const child = new RhythmWs({ prefix: "/ws/rooms" }).use(requireAuth).route("/:id", {});
     const parent = new RhythmWs({ prefix: "/ws" })
-      .guard((request) => (request.headers.get("x-tenant") ? undefined : new Response(null, { status: 400 })))
-      .merge(child)
+      .use(async (ctx, next) => {
+        if (ctx.request.headers.get("x-tenant")) await next();
+        else ctx.response = new Response(null, { status: 400 });
+      })
+      .use(child.middleware())
       .route("/live", {});
     const { server, upgrades } = mockServer();
 
@@ -159,24 +195,35 @@ describe("guards and merge", () => {
       await parent.upgrade(req("/ws/rooms/7", { "x-tenant": "a", authorization: "secret" }), server),
     ).toBeUndefined();
     expect(upgrades[0]!.data).toEqual({ id: "7" });
-
-    expect(await parent.upgrade(req("/ws/live", { "x-tenant": "a" }), server)).toBeUndefined();
   });
 
-  test("merge snapshots the child: routes and guards added later stay out of the parent", async () => {
+  test("a parent route registered after a mounted child still upgrades", async () => {
+    const child = new RhythmWs({ prefix: "/ws/rooms" }).route("/:id", {});
+    const parent = new RhythmWs({ prefix: "/ws" }).use(child.middleware()).route("/live", {});
+    const { server } = mockServer();
+
+    expect(await parent.upgrade(req("/ws/live"), server)).toBeUndefined();
+    expect(await parent.upgrade(req("/ws/rooms/7"), server)).toBeUndefined();
+  });
+
+  test("middleware() snapshots the child: routes added later stay out of the parent", async () => {
     const child = new RhythmWs().route("/early", {});
-    const parent = new RhythmWs().merge(child);
-    child.route("/late", {}).guard(() => new Response(null, { status: 401 }));
+    const parent = new RhythmWs().use(child.middleware());
+    child.route("/late", {});
     const { server } = mockServer();
 
     expect(await parent.upgrade(req("/early"), server)).toBeUndefined();
     expect(parent.upgrade(req("/late"), server)).toBeNull();
   });
 
-  test("routes lists the compiled paths", () => {
-    const child = new RhythmWs({ prefix: "/rooms" }).route("/:id", {});
-    const ws = new RhythmWs({ prefix: "/ws" }).route("/live", {}).merge(child);
-    expect(ws.routes).toEqual(["/ws/live", "/ws/rooms/:id"]);
+  test("routes lists own and mounted paths", () => {
+    const child = new RhythmWs({ prefix: "/ws/rooms" }).route("/:id", {});
+    const ws = new RhythmWs({ prefix: "/ws" }).use(child.middleware()).route("/live", {});
+    expect(ws.routes).toEqual(["/ws/rooms/:id", "/ws/live"]);
+  });
+
+  test("use() rejects a non-function argument", () => {
+    expect(() => new RhythmWs().use(null as never)).toThrow(TypeError);
   });
 });
 
@@ -235,9 +282,14 @@ describe("origin validation", () => {
     expect(await ws.upgrade(req("/chat", { origin: "http://evil.example" }), server)).toBeUndefined();
   });
 
-  test("the origin check runs before guards", async () => {
+  test("the origin check runs before middleware", async () => {
     let ran = 0;
-    const ws = new RhythmWs().guard(() => void ran++).route("/chat", {});
+    const ws = new RhythmWs()
+      .use(async (_ctx, next) => {
+        ran++;
+        await next();
+      })
+      .route("/chat", {});
     const { server } = mockServer();
 
     await ws.upgrade(req("/chat", { origin: "http://evil.example" }), server);

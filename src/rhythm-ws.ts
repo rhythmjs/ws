@@ -1,7 +1,17 @@
+import { compose } from "@rhythmjs/rhythm/compose";
+import type { Middleware, NextFn } from "@rhythmjs/rhythm/types";
 import { addRoute, createRouter, findRoute, type RouterContext } from "rou3";
 
 export type WsParams = Readonly<Record<string, string>>;
 export type Server = Bun.Server<unknown>;
+
+export interface RhythmWsContext {
+  readonly request: Request;
+  readonly server: Server;
+  response: Response | undefined;
+}
+
+export type WsMiddleware = Middleware<RhythmWsContext>;
 
 export interface WsRoute<Data extends object = WsParams> {
   upgrade?(request: Request, params: WsParams, server: Server): Data | Response | Promise<Data | Response>;
@@ -13,11 +23,6 @@ export interface WsRoute<Data extends object = WsParams> {
   ping?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
   pong?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
 }
-
-export type WsGuard = (
-  request: Request,
-  server: Server,
-) => Response | undefined | void | Promise<Response | undefined | void>;
 
 export type WsOrigin =
   "same-origin" | readonly string[] | ((origin: string, request: Request) => boolean | Promise<boolean>) | false;
@@ -40,10 +45,14 @@ export interface RhythmWsOptions extends WsBehavior {
 type AnyRoute = WsRoute<object>;
 type AnyWs = Bun.ServerWebSocket<object>;
 
-interface Entry {
-  path: string;
-  route: AnyRoute;
-  extraGuards: readonly WsGuard[];
+type Entry =
+  { kind: "middleware"; fn: WsMiddleware; paths: readonly string[] } | { kind: "route"; path: string; route: AnyRoute };
+
+const mountedRoutes = Symbol.for("rhythmjs.ws.routes");
+const upgradedFlag = Symbol.for("rhythmjs.ws.upgraded");
+
+interface UpgradeContext extends RhythmWsContext {
+  [upgradedFlag]?: boolean;
 }
 
 function joinPath(prefix: string, path: string): string {
@@ -58,8 +67,8 @@ const connections = new WeakMap<object, AnyRoute>();
 export class RhythmWs {
   #options: RhythmWsOptions;
   #entries: Entry[] = [];
-  #guards: WsGuard[] = [];
-  #tree: RouterContext<Entry> | null = null;
+  #matchTree: RouterContext<AnyRoute> | null = null;
+  #pipeline: ((context: UpgradeContext, next?: NextFn<UpgradeContext>) => Promise<UpgradeContext>) | null = null;
 
   constructor(options: RhythmWsOptions = {}) {
     this.#options = options;
@@ -73,40 +82,38 @@ export class RhythmWs {
     if (typeof route !== "object" || route === null) {
       throw new TypeError("route must be a handlers object!");
     }
-    this.#entries.push({ path: joinPath(this.#prefix, path), route: route as AnyRoute, extraGuards: [] });
-    this.#tree = null;
+    this.#entries.push({ kind: "route", path: joinPath(this.#prefix, path), route: route as AnyRoute });
+    this.#invalidate();
     return this;
   }
 
-  guard(fn: WsGuard): this {
-    if (typeof fn !== "function") throw new TypeError("guard must be a function!");
-    this.#guards.push(fn);
-    return this;
-  }
-
-  merge(child: RhythmWs): this {
-    for (const entry of child.#entries) {
-      this.#entries.push({
-        path: joinPath(this.#prefix, entry.path),
-        route: entry.route,
-        extraGuards: [...child.#guards, ...entry.extraGuards],
-      });
-    }
-    this.#tree = null;
+  use(fn: WsMiddleware): this {
+    if (typeof fn !== "function") throw new TypeError("middleware must be a function!");
+    const paths = (fn as { [mountedRoutes]?: readonly string[] })[mountedRoutes] ?? [];
+    this.#entries.push({ kind: "middleware", fn, paths });
+    this.#invalidate();
     return this;
   }
 
   get routes(): readonly string[] {
-    return this.#entries.map((entry) => entry.path);
+    return this.#entries.flatMap((entry) => (entry.kind === "route" ? [entry.path] : entry.paths));
   }
 
   upgrade = (request: Request, server: Server): Promise<Response | undefined> | null => {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return null;
-    const tree = (this.#tree ??= this.#compile());
-    const match = findRoute(tree, "", new URL(request.url).pathname);
-    if (!match) return null;
-    return this.#accept(request, server, match.data, match.params ?? {});
+    const tree = (this.#matchTree ??= this.#compileMatchTree());
+    if (!findRoute(tree, "", new URL(request.url).pathname)) return null;
+    return this.#run(request, server);
   };
+
+  middleware(): WsMiddleware {
+    const fn = this.#compile();
+    const mounted: WsMiddleware = async (ctx, next) => {
+      await fn(ctx as UpgradeContext, next as NextFn<UpgradeContext>);
+    };
+    Object.defineProperty(mounted, mountedRoutes, { value: this.routes });
+    return mounted;
+  }
 
   get websocket(): Bun.WebSocketHandler<never> {
     const { prefix: _prefix, origin: _origin, ...behavior } = this.#options;
@@ -134,6 +141,11 @@ export class RhythmWs {
     } as unknown as Bun.WebSocketHandler<never>;
   }
 
+  #invalidate(): void {
+    this.#matchTree = null;
+    this.#pipeline = null;
+  }
+
   async #allowsOrigin(request: Request): Promise<boolean> {
     const option = this.#options.origin ?? "same-origin";
     if (option === false) return true;
@@ -151,31 +163,74 @@ export class RhythmWs {
     return option.includes(origin);
   }
 
-  async #accept(request: Request, server: Server, entry: Entry, params: WsParams): Promise<Response | undefined> {
+  async #run(request: Request, server: Server): Promise<Response | undefined> {
     if (!(await this.#allowsOrigin(request))) return new Response("Forbidden", { status: 403 });
-
-    for (const guard of [...this.#guards, ...entry.extraGuards]) {
-      const verdict = await guard(request, server);
-      if (verdict instanceof Response) return verdict;
-    }
-
-    const route = entry.route;
-    let data: object = params;
-    if (route.upgrade) {
-      const out = await route.upgrade(request, params, server);
-      if (out instanceof Response) return out;
-      if (out !== undefined) data = out;
-    }
-    const headers = typeof route.headers === "function" ? await route.headers(request, params) : route.headers;
-
-    connections.set(data, route);
-    if (server.upgrade(request, { data, ...(headers === undefined ? {} : { headers }) })) return undefined;
-    return new Response("Upgrade failed", { status: 500 });
+    const ctx: UpgradeContext = { request, server, response: undefined };
+    const fn = (this.#pipeline ??= this.#compile());
+    await fn(ctx);
+    if (ctx.response instanceof Response) return ctx.response;
+    if (ctx[upgradedFlag] === true) return undefined;
+    return new Response("Forbidden", { status: 403 });
   }
 
-  #compile(): RouterContext<Entry> {
-    const tree = createRouter<Entry>();
-    for (const entry of this.#entries) addRoute(tree, "", entry.path, entry);
+  async #accept(ctx: UpgradeContext, route: AnyRoute, params: WsParams): Promise<void> {
+    let data: object = params;
+    if (route.upgrade) {
+      const out = await route.upgrade(ctx.request, params, ctx.server);
+      if (out instanceof Response) {
+        ctx.response = out;
+        return;
+      }
+      if (out !== undefined) data = out;
+    }
+    const headers = typeof route.headers === "function" ? await route.headers(ctx.request, params) : route.headers;
+
+    connections.set(data, route);
+    if (ctx.server.upgrade(ctx.request, { data, ...(headers === undefined ? {} : { headers }) })) {
+      ctx[upgradedFlag] = true;
+      return;
+    }
+    ctx.response = new Response("Upgrade failed", { status: 500 });
+  }
+
+  #compile(): (context: UpgradeContext, next?: NextFn<UpgradeContext>) => Promise<UpgradeContext> {
+    const dispatchFor = (tree: RouterContext<AnyRoute>): Middleware<UpgradeContext> => {
+      return async (ctx, next) => {
+        if (ctx.response !== undefined || ctx[upgradedFlag] === true) return;
+        const match = findRoute(tree, "", new URL(ctx.request.url).pathname);
+        if (!match) {
+          await next();
+          return;
+        }
+        await this.#accept(ctx, match.data, match.params ?? {});
+      };
+    };
+
+    const stack: Middleware<UpgradeContext>[] = [];
+    let i = 0;
+    while (i < this.#entries.length) {
+      const entry = this.#entries[i]!;
+      if (entry.kind === "middleware") {
+        stack.push(entry.fn as Middleware<UpgradeContext>);
+        i++;
+        continue;
+      }
+      const tree = createRouter<AnyRoute>();
+      while (i < this.#entries.length) {
+        const routeEntry = this.#entries[i]!;
+        if (routeEntry.kind !== "route") break;
+        addRoute(tree, "", routeEntry.path, routeEntry.route);
+        i++;
+      }
+      stack.push(dispatchFor(tree));
+    }
+
+    return compose<UpgradeContext>(stack);
+  }
+
+  #compileMatchTree(): RouterContext<AnyRoute> {
+    const tree = createRouter<AnyRoute>();
+    for (const path of this.routes) addRoute(tree, "", path, {});
     return tree;
   }
 }

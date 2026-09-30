@@ -56,13 +56,12 @@ describe("Bun.serve integration", () => {
     });
   });
 
-  test("a guard rejection aborts the handshake over a real socket", async () => {
+  test("a middleware rejection aborts the handshake over a real socket", async () => {
     const ws = new RhythmWs()
-      .guard((request) =>
-        new URL(request.url).searchParams.get("token") === "good"
-          ? undefined
-          : new Response("Unauthorized", { status: 401 }),
-      )
+      .use(async (ctx, next) => {
+        if (new URL(ctx.request.url).searchParams.get("token") === "good") await next();
+        else ctx.response = new Response("Unauthorized", { status: 401 });
+      })
       .route("/guarded", {
         open(peer) {
           peer.send("in");
