@@ -1,0 +1,66 @@
+{
+  "name": "@rhythmjs/ws",
+  "version": "0.0.1",
+  "description": "Cross-runtime WebSocket routing for Rhythm, built on crossws and rou3, with Node, Bun, Deno, and Cloudflare adapters.",
+  "homepage": "https://rhythm.js.org/ws",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rhythmjs/ws.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/rhythm-ws.d.ts",
+      "default": "./dist/rhythm-ws.js"
+    },
+    "./adapters/node": {
+      "types": "./dist/adapters/node.d.ts",
+      "default": "./dist/adapters/node.js"
+    },
+    "./adapters/bun": {
+      "types": "./dist/adapters/bun.d.ts",
+      "default": "./dist/adapters/bun.js"
+    },
+    "./adapters/deno": {
+      "types": "./dist/adapters/deno.d.ts",
+      "default": "./dist/adapters/deno.js"
+    },
+    "./adapters/cloudflare": {
+      "types": "./dist/adapters/cloudflare.d.ts",
+      "default": "./dist/adapters/cloudflare.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "prepublishOnly": "vp check && vp test && vp pack",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test",
+    "lint": "vp lint",
+    "fmt": "vp fmt",
+    "fmt:check": "vp fmt --check",
+    "check": "vp check"
+  },
+  "dependencies": {
+    "crossws": "^0.4.12",
+    "rou3": "^0.11.0"
+  },
+  "devDependencies": {
+    "@rhythmjs/rhythm": "^0.0.10",
+    "@rhythmjs/router": "^0.0.10",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vite-plus": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
