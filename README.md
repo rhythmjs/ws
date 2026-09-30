@@ -1,6 +1,6 @@
 # @rhythmjs/ws
 
-WebSocket routing built on [Bun's own model](https://bun.com/docs/runtime/http/websockets), and nothing else. `RhythmWs` adds exactly the two things `Bun.serve` leaves to you — matching upgrade requests to endpoints, and deciding what each connection's `ws.data` is — with [rou3](https://github.com/h3js/rou3) route patterns (`:param`, `:param?`, `*`, `**`; a static segment beats a param segment). Everything else **is** Bun: handlers are Bun `WebSocketHandler` members receiving Bun's `ServerWebSocket`, `ws.data` is the object your route attached (typed per route), fan-out is Bun's native pub/sub, and the handshake is `server.upgrade()`.
+WebSocket routing for [Rhythm](https://github.com/rhythmjs/rhythm), the Bun-native backend framework, built on [Bun's own model](https://bun.com/docs/runtime/http/websockets) and nothing else. `RhythmWs` adds exactly the two things `Bun.serve` leaves to you — matching upgrade requests to endpoints, and deciding what each connection's `ws.data` is — with [rou3](https://github.com/h3js/rou3) route patterns (`:param`, `:param?`, `*`, `**`; a static segment beats a param segment). Everything else **is** Bun: handlers are Bun `WebSocketHandler` members receiving Bun's `ServerWebSocket`, `ws.data` is the object your route attached (typed per route), fan-out is Bun's native pub/sub, and the handshake is `server.upgrade()`.
 
 ## Example
 
