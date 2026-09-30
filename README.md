@@ -40,7 +40,8 @@ Bun.serve({
 
 ## The surface
 
-- **`new RhythmWs(options?)`**: `prefix` plus Bun's websocket tuning, carried onto `.websocket`: `idleTimeout`, `maxPayloadLength`, `backpressureLimit`, `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`, `perMessageDeflate`.
+- **`new RhythmWs(options?)`**: `prefix`, `origin`, plus Bun's websocket tuning, carried onto `.websocket`: `idleTimeout`, `maxPayloadLength`, `backpressureLimit`, `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`, `perMessageDeflate`.
+  - `origin` guards against cross-site WebSocket hijacking (browsers attach cookies to handshakes and are exempt from CORS). Default `"same-origin"`: a request carrying an `Origin` header must match its own `Host`, answered with `403` otherwise; requests without one (non-browser clients) pass. Also takes an exact-match allowlist (`["https://app.example"]`), a predicate `(origin, request) => boolean`, or `false` to opt out. The check runs before guards.
 - **`.route<Data>(path, handlers)`**: an endpoint. `handlers` is Bun's `WebSocketHandler` shape (`open`, `message`, `drain`, `close`, `ping`, `pong`; same signatures, same `ServerWebSocket`) plus two upgrade-time members:
   - `upgrade(request, params, server)`: computes this connection's `ws.data` (any object), or returns a `Response` to reject the handshake. Without it, `ws.data` is the route params, so `ws.data.id` on `/rooms/:id` just works.
   - `headers`: extra headers for the `101` response (subprotocol negotiation, cookies), a `HeadersInit` or `(request, params) =>` one.

@@ -19,6 +19,9 @@ export type WsGuard = (
   server: Server,
 ) => Response | undefined | void | Promise<Response | undefined | void>;
 
+export type WsOrigin =
+  "same-origin" | readonly string[] | ((origin: string, request: Request) => boolean | Promise<boolean>) | false;
+
 export interface WsBehavior {
   maxPayloadLength?: number;
   idleTimeout?: number;
@@ -31,6 +34,7 @@ export interface WsBehavior {
 
 export interface RhythmWsOptions extends WsBehavior {
   prefix?: string;
+  origin?: WsOrigin;
 }
 
 type AnyRoute = WsRoute<object>;
@@ -105,7 +109,7 @@ export class RhythmWs {
   };
 
   get websocket(): Bun.WebSocketHandler<never> {
-    const { prefix: _prefix, ...behavior } = this.#options;
+    const { prefix: _prefix, origin: _origin, ...behavior } = this.#options;
     const routeOf = (ws: AnyWs): AnyRoute | undefined => connections.get(ws.data);
     return {
       ...behavior,
@@ -130,7 +134,26 @@ export class RhythmWs {
     } as unknown as Bun.WebSocketHandler<never>;
   }
 
+  async #allowsOrigin(request: Request): Promise<boolean> {
+    const option = this.#options.origin ?? "same-origin";
+    if (option === false) return true;
+    const origin = request.headers.get("origin");
+    if (origin === null) return true;
+    if (typeof option === "function") return option(origin, request);
+    if (option === "same-origin") {
+      const host = request.headers.get("host") ?? new URL(request.url).host;
+      try {
+        return new URL(origin).host === host;
+      } catch {
+        return false;
+      }
+    }
+    return option.includes(origin);
+  }
+
   async #accept(request: Request, server: Server, entry: Entry, params: WsParams): Promise<Response | undefined> {
+    if (!(await this.#allowsOrigin(request))) return new Response("Forbidden", { status: 403 });
+
     for (const guard of [...this.#guards, ...entry.extraGuards]) {
       const verdict = await guard(request, server);
       if (verdict instanceof Response) return verdict;

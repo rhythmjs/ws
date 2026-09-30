@@ -180,6 +180,76 @@ describe("guards and merge", () => {
   });
 });
 
+describe("origin validation", () => {
+  test("rejects a cross-origin upgrade by default with 403", async () => {
+    const ws = new RhythmWs().route("/chat", {});
+    const { server, upgrades } = mockServer();
+
+    const rejected = await ws.upgrade(req("/chat", { origin: "http://evil.example" }), server);
+    expect(rejected?.status).toBe(403);
+    expect(upgrades).toHaveLength(0);
+  });
+
+  test("accepts a same-origin upgrade by default", async () => {
+    const ws = new RhythmWs().route("/chat", {});
+    const { server } = mockServer();
+
+    expect(await ws.upgrade(req("/chat", { origin: "http://localhost", host: "localhost" }), server)).toBeUndefined();
+  });
+
+  test("accepts requests without an origin header (non-browser clients)", async () => {
+    const ws = new RhythmWs().route("/chat", {});
+    const { server } = mockServer();
+
+    expect(await ws.upgrade(req("/chat"), server)).toBeUndefined();
+  });
+
+  test("rejects the literal null origin by default", async () => {
+    const ws = new RhythmWs().route("/chat", {});
+    const { server } = mockServer();
+
+    expect((await ws.upgrade(req("/chat", { origin: "null" }), server))?.status).toBe(403);
+  });
+
+  test("an allowlist matches full origins exactly", async () => {
+    const ws = new RhythmWs({ origin: ["https://app.example"] }).route("/chat", {});
+    const { server } = mockServer();
+
+    expect(await ws.upgrade(req("/chat", { origin: "https://app.example" }), server)).toBeUndefined();
+    expect((await ws.upgrade(req("/chat", { origin: "https://app.example.evil" }), server))?.status).toBe(403);
+    expect((await ws.upgrade(req("/chat", { origin: "http://app.example" }), server))?.status).toBe(403);
+  });
+
+  test("a predicate decides per request", async () => {
+    const ws = new RhythmWs({ origin: (origin) => origin.endsWith(".trusted.example") }).route("/chat", {});
+    const { server } = mockServer();
+
+    expect(await ws.upgrade(req("/chat", { origin: "https://a.trusted.example" }), server)).toBeUndefined();
+    expect((await ws.upgrade(req("/chat", { origin: "https://evil.example" }), server))?.status).toBe(403);
+  });
+
+  test("origin: false disables the check", async () => {
+    const ws = new RhythmWs({ origin: false }).route("/chat", {});
+    const { server } = mockServer();
+
+    expect(await ws.upgrade(req("/chat", { origin: "http://evil.example" }), server)).toBeUndefined();
+  });
+
+  test("the origin check runs before guards", async () => {
+    let ran = 0;
+    const ws = new RhythmWs().guard(() => void ran++).route("/chat", {});
+    const { server } = mockServer();
+
+    await ws.upgrade(req("/chat", { origin: "http://evil.example" }), server);
+    expect(ran).toBe(0);
+  });
+
+  test("origin stays out of the websocket behavior", () => {
+    const ws = new RhythmWs({ origin: false });
+    expect("origin" in ws.websocket).toBe(false);
+  });
+});
+
 describe("websocket dispatch", () => {
   test("dispatches every lifecycle event to the connection's route via ws.data", async () => {
     const seen: string[] = [];
