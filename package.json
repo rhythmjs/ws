@@ -1,6 +1,6 @@
 {
   "name": "@rhythmjs/ws",
-  "version": "0.0.3",
+  "version": "0.0.1",
   "description": "Bun-native WebSocket routing for Bun.serve: routes are Bun websocket handlers, ws.data is yours and typed per route, pub/sub and upgrade are Bun's own.",
   "keywords": [
     "bun",
