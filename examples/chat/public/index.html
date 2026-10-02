@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rhythm chat</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      #log {
+        height: 50vh;
+        overflow-y: auto;
+        background: #f4f4f5;
+        padding: 0.75rem;
+        white-space: pre-wrap;
+      }
+      #msg {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.5rem;
+        margin-top: 0.5rem;
+      }
+      #status {
+        color: #71717a;
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Rhythm chat</h1>
+    <p id="status">connecting…</p>
+    <pre id="log"></pre>
+    <input id="msg" placeholder="Say something…" autofocus disabled />
+    <script src="/app.js"></script>
+  </body>
+</html>

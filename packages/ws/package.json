@@ -1,0 +1,52 @@
+{
+  "name": "@rhythmjs/ws",
+  "version": "0.0.4",
+  "description": "Bun-native WebSocket routing for Bun.serve: routes are Bun websocket handlers, ws.data is yours and typed per route, pub/sub and upgrade are Bun's own.",
+  "keywords": [
+    "bun",
+    "pubsub",
+    "rhythm",
+    "websocket",
+    "ws"
+  ],
+  "homepage": "https://rhythm.js.org/ws",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rhythmjs/ws.git",
+    "directory": "packages/ws"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/rhythm-ws.d.ts",
+      "default": "./dist/rhythm-ws.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build src/rhythm-ws.ts --outdir dist --root src --format esm --target bun --packages external && tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "rou3": "^0.11.0"
+  },
+  "devDependencies": {
+    "@rhythmjs/rhythm": "^0.0.14"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "peerDependencies": {
+    "@rhythmjs/rhythm": ">=0.0.14"
+  }
+}

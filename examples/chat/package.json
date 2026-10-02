@@ -1,0 +1,13 @@
+{
+  "name": "example-chat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rhythmjs/ws": "workspace:*"
+  }
+}

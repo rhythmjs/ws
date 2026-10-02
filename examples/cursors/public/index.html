@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rhythm cursors</title>
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+        background: #fafafa;
+      }
+      p {
+        position: fixed;
+        top: 1rem;
+        left: 1rem;
+        margin: 0;
+        color: #71717a;
+      }
+      .cursor {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        pointer-events: none;
+        transform: translate(-50%, -50%);
+      }
+    </style>
+  </head>
+  <body>
+    <p id="status">connecting…</p>
+    <script src="/app.js"></script>
+  </body>
+</html>

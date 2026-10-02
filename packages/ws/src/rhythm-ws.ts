@@ -20,8 +20,6 @@ export interface WsRoute<Data extends object = WsParams> {
   message?(ws: Bun.ServerWebSocket<Data>, message: string | Buffer): void | Promise<void>;
   drain?(ws: Bun.ServerWebSocket<Data>): void | Promise<void>;
   close?(ws: Bun.ServerWebSocket<Data>, code: number, reason: string): void | Promise<void>;
-  ping?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
-  pong?(ws: Bun.ServerWebSocket<Data>, data: Buffer): void | Promise<void>;
 }
 
 export type WsOrigin =
@@ -46,7 +44,8 @@ type AnyRoute = WsRoute<object>;
 type AnyWs = Bun.ServerWebSocket<object>;
 
 type Entry =
-  { kind: "middleware"; fn: WsMiddleware; paths: readonly string[] } | { kind: "route"; path: string; route: AnyRoute };
+  | { kind: "middleware"; fn: WsMiddleware; paths: readonly string[]; mounted: boolean }
+  | { kind: "route"; path: string; route: AnyRoute };
 
 const mountedRoutes = Symbol.for("rhythmjs.ws.routes");
 const upgradedFlag = Symbol.for("rhythmjs.ws.upgraded");
@@ -89,8 +88,8 @@ export class RhythmWs {
 
   use(fn: WsMiddleware): this {
     if (typeof fn !== "function") throw new TypeError("middleware must be a function!");
-    const paths = (fn as { [mountedRoutes]?: readonly string[] })[mountedRoutes] ?? [];
-    this.#entries.push({ kind: "middleware", fn, paths });
+    const paths = (fn as { [mountedRoutes]?: readonly string[] })[mountedRoutes];
+    this.#entries.push({ kind: "middleware", fn, paths: paths ?? [], mounted: paths !== undefined });
     this.#invalidate();
     return this;
   }
@@ -131,12 +130,6 @@ export class RhythmWs {
       },
       close(ws: AnyWs, code: number, reason: string) {
         return routeOf(ws)?.close?.(ws, code, reason);
-      },
-      ping(ws: AnyWs, data: Buffer) {
-        return routeOf(ws)?.ping?.(ws, data);
-      },
-      pong(ws: AnyWs, data: Buffer) {
-        return routeOf(ws)?.pong?.(ws, data);
       },
     } as unknown as Bun.WebSocketHandler<never>;
   }
@@ -206,12 +199,33 @@ export class RhythmWs {
       };
     };
 
+    // Like the router: a middleware only runs when a route registered after it (own or mounted) matches the
+    // request. A mounted child gates its own middleware the same way against its own routes.
+    const trees: RouterContext<AnyRoute>[] = [];
+    const reaches = (ctx: UpgradeContext, from: number): boolean => {
+      const pathname = new URL(ctx.request.url).pathname;
+      for (let t = from; t < trees.length; t++) if (findRoute(trees[t]!, "", pathname)) return true;
+      return false;
+    };
+
     const stack: Middleware<UpgradeContext>[] = [];
     let i = 0;
     while (i < this.#entries.length) {
       const entry = this.#entries[i]!;
       if (entry.kind === "middleware") {
-        stack.push(entry.fn as Middleware<UpgradeContext>);
+        const fn = entry.fn as Middleware<UpgradeContext>;
+        if (entry.mounted) {
+          const tree = createRouter<AnyRoute>();
+          for (const path of entry.paths) addRoute(tree, "", path, {});
+          trees.push(tree);
+          stack.push(fn);
+        } else {
+          const from = trees.length;
+          stack.push(async (ctx, next) => {
+            if (reaches(ctx, from)) await fn(ctx, next);
+            else await next();
+          });
+        }
         i++;
         continue;
       }
@@ -222,6 +236,7 @@ export class RhythmWs {
         addRoute(tree, "", routeEntry.path, routeEntry.route);
         i++;
       }
+      trees.push(tree);
       stack.push(dispatchFor(tree));
     }
 

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rhythm notifications</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      form {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-bottom: 1rem;
+      }
+      input {
+        padding: 0.5rem;
+        flex: 1 1 8rem;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+      }
+      li {
+        background: #f4f4f5;
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+      li span {
+        display: block;
+        color: #52525b;
+        font-size: 0.875rem;
+      }
+      #status {
+        color: #71717a;
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Rhythm notifications</h1>
+    <p id="status">connecting…</p>
+    <form id="send">
+      <input id="to" placeholder="to (empty = everyone)" />
+      <input id="title" placeholder="title" required />
+      <input id="body" placeholder="body" />
+      <button>Send</button>
+    </form>
+    <ul id="inbox"></ul>
+    <script src="/app.js"></script>
+  </body>
+</html>

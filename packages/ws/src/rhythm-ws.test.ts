@@ -197,6 +197,59 @@ describe("middleware and mounting", () => {
     expect(upgrades[0]!.data).toEqual({ id: "7" });
   });
 
+  test("a mounted child's middleware does not run for a sibling child's routes", async () => {
+    const seen: string[] = [];
+    const rooms = new RhythmWs({ prefix: "/ws/rooms" })
+      .use(async (ctx, next) => {
+        seen.push("rooms-guard");
+        ctx.response = new Response(null, { status: 401 });
+        await next();
+      })
+      .route("/:id", {});
+    const feed = new RhythmWs({ prefix: "/ws/feed" }).route("/", {});
+    const parent = new RhythmWs().use(rooms.middleware()).use(feed.middleware());
+    const { server } = mockServer();
+
+    expect(await parent.upgrade(req("/ws/feed"), server)).toBeUndefined();
+    expect(seen).toEqual([]);
+    expect((await parent.upgrade(req("/ws/rooms/7"), server))?.status).toBe(401);
+    expect(seen).toEqual(["rooms-guard"]);
+  });
+
+  test("parent middleware before mounted-only children runs for each child's routes", async () => {
+    const seen: string[] = [];
+    const guard: WsMiddleware = async (_ctx, next) => {
+      seen.push("parent-guard");
+      await next();
+    };
+    const parent = new RhythmWs()
+      .use(guard)
+      .use(new RhythmWs({ prefix: "/a" }).route("/x", {}).middleware())
+      .use(new RhythmWs({ prefix: "/b" }).route("/y", {}).middleware());
+    const { server } = mockServer();
+
+    expect(await parent.upgrade(req("/a/x"), server)).toBeUndefined();
+    expect(await parent.upgrade(req("/b/y"), server)).toBeUndefined();
+    expect(seen).toEqual(["parent-guard", "parent-guard"]);
+  });
+
+  test("a middleware only runs for routes registered after it", async () => {
+    const seen: string[] = [];
+    const tag =
+      (name: string): WsMiddleware =>
+      async (_ctx, next) => {
+        seen.push(name);
+        await next();
+      };
+    const ws = new RhythmWs().route("/early", {}).use(tag("late-mw")).route("/late", {});
+    const { server } = mockServer();
+
+    await ws.upgrade(req("/early"), server);
+    expect(seen).toEqual([]);
+    await ws.upgrade(req("/late"), server);
+    expect(seen).toEqual(["late-mw"]);
+  });
+
   test("a parent route registered after a mounted child still upgrades", async () => {
     const child = new RhythmWs({ prefix: "/ws/rooms" }).route("/:id", {});
     const parent = new RhythmWs({ prefix: "/ws" }).use(child.middleware()).route("/live", {});

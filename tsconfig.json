@@ -1,17 +1,4 @@
 {
-  "compilerOptions": {
-    "target": "ESNext",
-    "module": "Preserve",
-    "moduleResolution": "bundler",
-    "moduleDetection": "force",
-    "lib": ["ESNext"],
-    "types": ["bun"],
-    "strict": true,
-    "skipLibCheck": true,
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src", "example"]
+  "extends": "./tsconfig.base.json",
+  "include": ["packages/*/src", "examples/*/src"]
 }
