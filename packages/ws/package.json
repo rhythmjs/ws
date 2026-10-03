@@ -41,7 +41,7 @@
     "rou3": "^0.11.0"
   },
   "devDependencies": {
-    "@rhythmjs/rhythm": "^0.0.14"
+    "@rhythmjs/rhythm": "^0.0.15"
   },
   "engines": {
     "bun": ">=1.2.0"

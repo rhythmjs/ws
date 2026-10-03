@@ -37,7 +37,7 @@
         "rou3": "^0.11.0",
       },
       "devDependencies": {
-        "@rhythmjs/rhythm": "^0.0.14",
+        "@rhythmjs/rhythm": "^0.0.15",
       },
       "peerDependencies": {
         "@rhythmjs/rhythm": ">=0.0.14",
@@ -83,7 +83,7 @@
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.86.0", "", { "os": "win32", "cpu": "x64" }, "sha512-az4dzifCRzES1crwu6pDFXzJTIanrdxXFL9TbiJWrx9LKcuacbR83aPvxDA1LKLNswi/RoqitC7Afcflhu3zBQ=="],
 
-    "@rhythmjs/rhythm": ["@rhythmjs/rhythm@0.0.14", "", {}, "sha512-MFpBWkxW8xPxTL2F0sFLgvtB9FLurTIL7vRZWu/Vj+/23MC+Q85gNdoahn+2Rvi7s0XceCrv3wrZDJqbR1uQVA=="],
+    "@rhythmjs/rhythm": ["@rhythmjs/rhythm@0.0.15", "", {}, "sha512-GVsKFaGyec1z+F+lyX1tTGpjzGvCTp+yBb/KU1nAXuJTe4XS1Zss7BHpaAWY91rLE6tfpnlTweCB5wYT8b5WVw=="],
 
     "@rhythmjs/ws": ["@rhythmjs/ws@workspace:packages/ws"],
 
