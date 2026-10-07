@@ -1,6 +1,6 @@
 {
   "name": "@rhythmjs/ws",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Bun-native WebSocket routes for Rhythm: a pipeline you mount into any app, whose routes call Bun's server.upgrade; ws.data is yours and typed per route, pub/sub is Bun's own.",
   "keywords": [
     "bun",
