@@ -1,6 +1,6 @@
 {
   "name": "@rhythmjs/ws",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Bun-native WebSocket routes for Rhythm: a pipeline you mount into any app, whose routes call Bun's server.upgrade; ws.data is yours and typed per route, pub/sub is Bun's own.",
   "keywords": [
     "bun",
@@ -32,6 +32,8 @@
     "access": "public"
   },
   "scripts": {
+    "clean": "rm -rf dist",
+    "prebuild": "bun run clean",
     "build": "bun build src/rhythm-ws.ts --outdir dist --root src --format esm --target bun --packages external && tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run typecheck && bun test && bun run build",
     "typecheck": "tsc --noEmit",
@@ -41,8 +43,8 @@
     "rou3": "^1.0.0"
   },
   "devDependencies": {
-    "@rhythmjs/rhythm": "^0.0.20",
-    "@rhythmjs/router": "^0.0.20"
+    "@rhythmjs/rhythm": "^0.0.21",
+    "@rhythmjs/router": "^0.0.21"
   },
   "engines": {
     "bun": ">=1.2.0"
