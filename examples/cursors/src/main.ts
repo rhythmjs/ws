@@ -1,12 +1,10 @@
-import { RhythmWs } from "@rhythmjs/ws";
+import { Rhythm, mount } from "@rhythmjs/rhythm";
+import { RhythmRouter } from "@rhythmjs/router";
+import { toFetchHandler } from "@rhythmjs/router/fetch";
+import { RhythmWs, createWebsocket } from "@rhythmjs/ws";
 
-interface Peer {
-  id: string;
-  color: string;
-}
-
-// Everyone shares one topic; publishToSelf is off so a client never receives its own movement back.
-const ws = new RhythmWs({ prefix: "/ws", publishToSelf: false }).route<Peer>("/cursors", {
+// Everyone shares one topic; publishToSelf is off (below) so a client never receives its own movement back.
+const ws = new RhythmWs().ws("/ws/cursors", {
   upgrade() {
     return { id: crypto.randomUUID().slice(0, 8), color: `hsl(${Math.floor(Math.random() * 360)} 80% 50%)` };
   },
@@ -23,23 +21,22 @@ const ws = new RhythmWs({ prefix: "/ws", publishToSelf: false }).route<Peer>("/c
   },
 });
 
-const files: Record<string, string> = {
-  "/": "index.html",
-  "/app.js": "app.js",
-};
+const page = (file: string) => Bun.file(new URL(`../public/${file}`, import.meta.url));
+
+const http = new RhythmRouter()
+  .get("/", (ctx) => {
+    ctx.response.headers.set("content-type", "text/html; charset=utf-8");
+    ctx.response.body = page("index.html");
+  })
+  .get("/app.js", (ctx) => {
+    ctx.response.headers.set("content-type", "text/javascript; charset=utf-8");
+    ctx.response.body = page("app.js");
+  });
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3001),
-  fetch(request, srv) {
-    const upgrade = ws.upgrade(request, srv);
-    if (upgrade !== null) return upgrade;
-
-    const file = files[new URL(request.url).pathname];
-    return file
-      ? new Response(Bun.file(new URL(`../public/${file}`, import.meta.url)))
-      : new Response("Not Found", { status: 404 });
-  },
-  websocket: ws.websocket,
+  fetch: toFetchHandler(new Rhythm().use(mount(ws)).use(mount(http))),
+  websocket: createWebsocket({ publishToSelf: false }),
 });
 
 console.log(`cursors listening on ${server.url} (open in several windows and move the mouse)`);

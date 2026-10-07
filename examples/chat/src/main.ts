@@ -1,19 +1,16 @@
-import { RhythmWs } from "@rhythmjs/ws";
+import { Rhythm, mount } from "@rhythmjs/rhythm";
+import { RhythmRouter } from "@rhythmjs/router";
+import { toFetchHandler } from "@rhythmjs/router/fetch";
+import { RhythmWs, createWebsocket } from "@rhythmjs/ws";
 
-interface Chat {
-  handle: string;
-  room: string;
-  topic: string;
-}
-
-const ws = new RhythmWs({ prefix: "/ws", idleTimeout: 120 })
+const ws = new RhythmWs()
   .use(async (ctx, next) => {
     if (new URL(ctx.request.url).searchParams.get("token") === "demo") await next();
-    else ctx.response = new Response("Unauthorized", { status: 401 });
+    else ctx.error(401);
   })
-  .route<Chat>("/rooms/:id", {
-    upgrade(_request, params) {
-      const room = params.id!;
+  .ws("/ws/rooms/:id", {
+    upgrade(ctx) {
+      const room = ctx.params.id;
       return { handle: Math.random().toString(36).slice(2, 8), room, topic: `room:${room}` };
     },
     open(peer) {
@@ -31,30 +28,28 @@ const ws = new RhythmWs({ prefix: "/ws", idleTimeout: 120 })
     },
   });
 
-const files: Record<string, string> = {
-  "/": "index.html",
-  "/app.js": "app.js",
-};
+const page = (file: string) => Bun.file(new URL(`../public/${file}`, import.meta.url));
+
+const http = new RhythmRouter()
+  .get("/", (ctx) => {
+    ctx.response.headers.set("content-type", "text/html; charset=utf-8");
+    ctx.response.body = page("index.html");
+  })
+  .get("/app.js", (ctx) => {
+    ctx.response.headers.set("content-type", "text/javascript; charset=utf-8");
+    ctx.response.body = page("app.js");
+  })
+  .post("/api/rooms/:id/announce", async (ctx) => {
+    ctx.server?.publish(`room:${ctx.params.id}`, `announcement: ${await ctx.request.text()}`);
+    ctx.json({ ok: true }, 201);
+  });
+
+const app = new Rhythm().use(mount(ws)).use(mount(http));
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),
-  async fetch(request, srv) {
-    const upgrade = ws.upgrade(request, srv);
-    if (upgrade !== null) return upgrade;
-
-    const { pathname } = new URL(request.url);
-    const announce = pathname.match(/^\/api\/rooms\/([^/]+)\/announce$/);
-    if (request.method === "POST" && announce) {
-      srv.publish(`room:${announce[1]}`, `announcement: ${await request.text()}`);
-      return Response.json({ ok: true }, { status: 201 });
-    }
-
-    const file = files[pathname];
-    return file
-      ? new Response(Bun.file(new URL(`../public/${file}`, import.meta.url)))
-      : new Response("Not Found", { status: 404 });
-  },
-  websocket: ws.websocket,
+  fetch: toFetchHandler(app),
+  websocket: createWebsocket({ idleTimeout: 120 }),
 });
 
 console.log(`chat listening on ${server.url} (open two tabs, or #room-name for other rooms)`);

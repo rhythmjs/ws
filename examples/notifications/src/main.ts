@@ -1,18 +1,17 @@
-import { RhythmWs } from "@rhythmjs/ws";
-
-interface Inbox {
-  user: string;
-}
+import { Rhythm, mount } from "@rhythmjs/rhythm";
+import { RhythmRouter } from "@rhythmjs/router";
+import { toFetchHandler } from "@rhythmjs/router/fetch";
+import { RhythmWs, websocket } from "@rhythmjs/ws";
 
 // Server push: browsers only listen, other code (here an HTTP endpoint) publishes to user topics.
-const ws = new RhythmWs({ prefix: "/ws" })
+const ws = new RhythmWs()
   .use(async (ctx, next) => {
     if (new URL(ctx.request.url).searchParams.get("user")) await next();
-    else ctx.response = new Response("Missing ?user=", { status: 400 });
+    else ctx.error(400, "Missing ?user=");
   })
-  .route<Inbox>("/inbox", {
-    upgrade(request) {
-      return { user: new URL(request.url).searchParams.get("user")! };
+  .ws("/ws/inbox", {
+    upgrade(ctx) {
+      return { user: new URL(ctx.request.url).searchParams.get("user")! };
     },
     open(peer) {
       peer.subscribe(`user:${peer.data.user}`);
@@ -21,32 +20,31 @@ const ws = new RhythmWs({ prefix: "/ws" })
     },
   });
 
-const files: Record<string, string> = {
-  "/": "index.html",
-  "/app.js": "app.js",
-};
+const page = (file: string) => Bun.file(new URL(`../public/${file}`, import.meta.url));
+
+const http = new RhythmRouter()
+  .get("/", (ctx) => {
+    ctx.response.headers.set("content-type", "text/html; charset=utf-8");
+    ctx.response.body = page("index.html");
+  })
+  .get("/app.js", (ctx) => {
+    ctx.response.headers.set("content-type", "text/javascript; charset=utf-8");
+    ctx.response.body = page("app.js");
+  })
+  // POST /api/notify -> everyone, POST /api/notify/:user -> one user
+  .post("/api/notify", async (ctx) => {
+    ctx.server?.publish("broadcast", JSON.stringify(await ctx.request.json()));
+    ctx.json({ ok: true }, 201);
+  })
+  .post("/api/notify/:user", async (ctx) => {
+    ctx.server?.publish(`user:${ctx.params.user}`, JSON.stringify(await ctx.request.json()));
+    ctx.json({ ok: true }, 201);
+  });
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3002),
-  async fetch(request, srv) {
-    const upgrade = ws.upgrade(request, srv);
-    if (upgrade !== null) return upgrade;
-
-    const { pathname } = new URL(request.url);
-    if (request.method === "POST" && pathname.startsWith("/api/notify")) {
-      // POST /api/notify -> everyone, POST /api/notify/:user -> one user
-      const user = pathname.slice("/api/notify".length).replace(/^\//, "");
-      const notification = (await request.json()) as { title: string; body?: string };
-      srv.publish(user ? `user:${user}` : "broadcast", JSON.stringify(notification));
-      return Response.json({ ok: true }, { status: 201 });
-    }
-
-    const file = files[pathname];
-    return file
-      ? new Response(Bun.file(new URL(`../public/${file}`, import.meta.url)))
-      : new Response("Not Found", { status: 404 });
-  },
-  websocket: ws.websocket,
+  fetch: toFetchHandler(new Rhythm().use(mount(ws)).use(mount(http))),
+  websocket,
 });
 
 console.log(`notifications listening on ${server.url} (open ${server.url}?user=ada)`);

@@ -8,6 +8,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@rhythmjs/rhythm": "^0.0.20",
+    "@rhythmjs/router": "^0.0.20",
     "@rhythmjs/ws": "workspace:*"
   }
 }
