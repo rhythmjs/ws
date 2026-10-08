@@ -140,7 +140,7 @@ const ws = new RhythmWs().use(session()).ws("/ws/inbox", {
 ```
 
 - **Session and cookies from `@rhythmjs/http`**: `session()` and `cookies()` are extension middleware; `.use(...)` them and `ctx.session` / cookie helpers are available in `upgrade` and `headers`.
-- **Authentication and rate limiting from `@rhythmjs/security`**: `attachUser` / `requireAuthentication` work as on a router. `rateLimitWs` is shaped for exactly this `use()` slot.
+- **Rate limiting from `@rhythmjs/security`**: `rateLimit` works as on a router. Your own authentication guards (a `derive` step that resolves the user, then a `(ctx, next)` guard) go in the same `use()` slot.
 - **`@rhythmjs/better-auth`**: `withSession()` / `requireSession()` apply with `.use(...)` like any other middleware, and need the same `ctx.auth` that its module provides to the app.
 
 Order matters, as everywhere in Rhythm: middleware runs in the order you call `use()`, after the origin check and before the route's `upgrade`. Put guards (rate limit, authentication) before anything expensive, and put whatever `upgrade` depends on before the route.
